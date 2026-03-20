@@ -438,12 +438,12 @@ class WorkCog(commands.Cog):
             attempts = max(1, main_stat) 
             
             res_type = "materials" if prop["type"] == "завод" else "crops" if prop["type"] == "ферма" else "data"
-            total_salary = salary * attempts 
+            total_salary = salary 
 
             if comp_owner == "STATE_COMPANY":
                 config = load_guild_json(guild_id, ECONOMY_CONFIG)
                 if config.get("server_bank", 0) < total_salary:
-                    return await interaction.response.send_message(f"У Державній Казні недостатньо грошей для оплати такої партії ({total_salary} AC).", ephemeral=True)
+                    return await interaction.response.send_message(f"У Державній Казні недостатньо грошей для оплати ({total_salary} AC).", ephemeral=True)
                 config["server_bank"] -= total_salary
                 save_guild_json(guild_id, ECONOMY_CONFIG, config)
             else:
