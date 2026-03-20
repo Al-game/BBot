@@ -4,7 +4,7 @@ from discord import app_commands
 import platform
 import os
 
-DEVELOPER_IDS = [123456789012345678, 987654321098765432] 
+DEVELOPER_IDS = [929271549775724558, 824664429110100028] 
 
 def is_dev():
     """Кастомний декоратор, який замінює is_owner()"""
