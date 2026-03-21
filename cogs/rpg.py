@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import json, os, time, random, math, uuid
+from datetime import datetime
 from datetime import time as dt_time, timezone, timedelta
 from utils import load_guild_json, save_guild_json
 
@@ -376,9 +377,14 @@ class RPGCog(commands.Cog):
 
     # --- ЗАЛИШОК СТАРОГО КОДУ ---
 
-    @tasks.loop(time=dt_time(hour=16, minute=0, tzinfo=timezone.utc))
+    @tasks.loop(minutes=1)
     async def daily_quest_loop(self):
+        """Перевіряє кожну хвилину, чи не настав час для дейліка на якомусь із серверів"""
         if not os.path.exists("server_data"): return
+        
+        now = datetime.now()
+        current_time_str = now.strftime("%H:%M")
+        today_str = now.strftime("%Y-%m-%d")
         
         for guild_id_str in os.listdir("server_data"):
             try:
@@ -389,17 +395,23 @@ class RPGCog(commands.Cog):
                 config = load_guild_json(guild_id, RPG_CONFIG)
                 channel_id = config.get("daily_channel_id")
                 
-                if channel_id:
+                daily_time = config.get("daily_time", "18:00")
+                last_sent = config.get("last_daily_sent_date", "")
+                
+                if channel_id and current_time_str == daily_time and last_sent != today_str:
                     channel = guild.get_channel(channel_id)
                     if channel:
                         embed = discord.Embed(
                             title="🌟 Щоденний Квест Доступний!", 
-                            description="Натисніть кнопку нижче, щоб отримати свої 100 AC та +1 до випадкової характеристики!\n*Оновлюється щодня о 18:00.*",
+                            description=f"Натисніть кнопку нижче, щоб отримати свої 100 AC та +1 до випадкової характеристики!\n*Час щоденного оновлення: {daily_time}.*",
                             color=0xf1c40f
                         )
                         await channel.send(embed=embed, view=DailyView(self))
+                        
+                        config["last_daily_sent_date"] = today_str
+                        save_guild_json(guild_id, RPG_CONFIG, config)
             except Exception as e:
-                print(f"Помилка відправки дейліка: {e}")
+                print(f"Помилка відправки дейліка для {guild_id_str}: {e}")
 
     @daily_quest_loop.before_loop
     async def before_daily(self):
@@ -496,10 +508,6 @@ class RPGCog(commands.Cog):
         save_guild_json(guild_id, ECONOMY_CONFIG, config)
         
         await interaction.response.send_message(f"⚖️ {interaction.user.mention} вніс заставу у розмірі `{bail_cost} AC`! Гравець {member.mention} знову на волі і може використовувати команди.")
-
-    # ==========================================
-    # КОМАНДИ КВЕСТІВ ТА АДМІНУ
-    # ==========================================
 
     @app_commands.command(name="admin_quest_create", description="[АДМІН] Створити новий квест для гравців")
     @app_commands.default_permissions(administrator=True)
@@ -598,6 +606,23 @@ class RPGCog(commands.Cog):
         config["daily_channel_id"] = channel.id
         save_guild_json(guild_id, RPG_CONFIG, config)
         await interaction.response.send_message(f"Тепер дейліки будуть з'являтися у каналі {channel.mention} щодня о 18:00.")
+
+    @app_commands.command(name="set_daily_time", description="[АДМІН] Встановити час появи щоденного квесту")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        hour="Година (від 0 до 23)", 
+        minute="Хвилина (від 0 до 59)"
+    )
+    @app_commands.guild_only()
+    async def set_daily_time(self, interaction: discord.Interaction, hour: app_commands.Range[int, 0, 23], minute: app_commands.Range[int, 0, 59]):
+        guild_id = interaction.guild.id
+        config = load_guild_json(guild_id, RPG_CONFIG)
+        
+        time_str = f"{hour:02d}:{minute:02d}"
+        config["daily_time"] = time_str
+        save_guild_json(guild_id, RPG_CONFIG, config)
+        
+        await interaction.response.send_message(f"⏰ Час появи щоденного квесту успішно змінено на **{time_str}** (за часом сервера).", ephemeral=True)
 
     @app_commands.command(name="admin_give_stat", description="[АДМІН] Додати характеристику гравцю")
     @app_commands.default_permissions(administrator=True)

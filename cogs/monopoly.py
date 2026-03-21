@@ -96,11 +96,11 @@ def get_monopoly_data(guild_id: int):
     if "STATE_COMPANY" not in data["companies"]:
         state_props = {
             "state_warehouse": {"type": "склад", "name": "Державний Резерв", "level": 6, "durability": 100, "storage": {}, "connected_to": None, "hiring_mode": "open", "workers": {}, "salaries": {"логіст": 250, "охоронець": 300, "менеджер": 200}, "purchase_price": 50000},
-            "state_factory": {"type": "завод", "name": "Державний Завод", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 15, "менеджер": 200}, "purchase_price": 50000},
-            "state_farm": {"type": "ферма", "name": "Державні Угіддя", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 12, "агроном": 200}, "purchase_price": 45000},
-            "state_office": {"type": "офіс", "name": "Державний Офіс", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 18, "менеджер": 250}, "purchase_price": 50000},
-            "state_server_1": {"type": "сервер", "name": "Головний Держ-Сервер", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_office", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 20}, "purchase_price": 30000},
-            "state_server_2": {"type": "сервер", "name": "Резервний Держ-Сервер", "level": 2, "durability": 100, "storage": {}, "connected_to": "state_office", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 16}, "purchase_price": 30000}
+            "state_factory": {"type": "завод", "name": "Державний Завод", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 150, "менеджер": 200}, "purchase_price": 50000},
+            "state_farm": {"type": "ферма", "name": "Державні Угіддя", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 120, "агроном": 200}, "purchase_price": 45000},
+            "state_office": {"type": "офіс", "name": "Державний Офіс", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_warehouse", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 180, "менеджер": 250}, "purchase_price": 50000},
+            "state_server_1": {"type": "сервер", "name": "Головний Держ-Сервер", "level": 3, "durability": 100, "storage": {}, "connected_to": "state_office", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 200}, "purchase_price": 30000},
+            "state_server_2": {"type": "сервер", "name": "Резервний Держ-Сервер", "level": 2, "durability": 100, "storage": {}, "connected_to": "state_office", "hiring_mode": "open", "workers": {}, "salaries": {"робітник": 160}, "purchase_price": 30000}
         }
         data["companies"]["STATE_COMPANY"] = {
             "name": "🏛️ Державне Підприємство",

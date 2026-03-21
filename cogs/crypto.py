@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime, time as dt_time, timezone
+from datetime import time as dt_time, timezone
 from utils import load_guild_json, save_guild_json
 
 logging.basicConfig(level=logging.INFO)
@@ -74,6 +74,7 @@ def generate_crypto_chart(market_data: dict) -> io.BytesIO:
 # ==========================================
 # UI ДЛЯ КРИПТОБІРЖІ (МОДАЛЬНІ ВІКНА)
 # ==========================================
+
 class CryptoActionModal(discord.ui.Modal):
     def __init__(self, action: str, symbol: str, cog: commands.Cog):
         title = f"Купівля {symbol}" if action == "buy" else f"Продаж {symbol}"
@@ -122,7 +123,7 @@ class CryptoActionModal(discord.ui.Modal):
             total_cost = int(price * amount * (1 + buy_commission))
             
             if user.get("balance", 0) < total_cost:
-                return await interaction.response.send_message(f"Недостатньо AC! Треба `{total_cost}`.", ephemeral=True)
+                return await interaction.response.send_message(f"❌ Недостатньо AC! Треба `{total_cost}`.", ephemeral=True)
 
             commission_amount = int(price * amount * buy_commission)
             owner_share = int(price * amount * 0.01) if owner_id != "None" and owner_id != "None" else 0
@@ -137,11 +138,11 @@ class CryptoActionModal(discord.ui.Modal):
             user.setdefault("crypto", {})[self.symbol] = user["crypto"].get(self.symbol, 0) + amount
             user.setdefault("crypto_timestamps", {})[self.symbol] = int(time.time())
 
-            msg = f"Куплено **{amount} {self.symbol}** за `{total_cost} AC`."
+            msg = f"✅ Куплено **{amount} {self.symbol}** за `{total_cost} AC`."
 
         else:
             if self.symbol not in user.get("crypto", {}) or user["crypto"][self.symbol] < amount:
-                return await interaction.response.send_message("Недостатньо криптовалюти для продажу.", ephemeral=True)
+                return await interaction.response.send_message("❌ Недостатньо криптовалюти для продажу.", ephemeral=True)
 
             sell_commission = config.get("sell_commission", 0.05)
             market_spread = config.get("market_spread", 0.10)
@@ -155,7 +156,7 @@ class CryptoActionModal(discord.ui.Modal):
                 penalty = int(base_sell * config.get("paper_hands_tax", 0.15))
                 base_sell -= penalty
                 config["server_bank"] = config.get("server_bank", 0) + penalty
-                penalty_msg = f"\n⚠️ Штраф за швидкий продаж: -`{penalty} AC`"
+                penalty_msg = f"\n⚠️ Штраф за швидкий продаж (Paper Hands): -`{penalty} AC`"
 
             user["crypto"][self.symbol] -= amount
             user["balance"] += base_sell
@@ -163,7 +164,7 @@ class CryptoActionModal(discord.ui.Modal):
             if owner_id != "None" and owner_id in data:
                 data[owner_id]["balance"] = data[owner_id].get("balance", 0) + owner_share
 
-            msg = f"Продано **{amount} {self.symbol}** за `{base_sell} AC`.{penalty_msg}"
+            msg = f"✅ Продано **{amount} {self.symbol}** за `{base_sell} AC`.{penalty_msg}"
 
         market = self.cog.apply_market_impact(market, self.symbol, amount, is_buy=(self.action == "buy"))
 
@@ -207,7 +208,7 @@ class CryptoMarketView(discord.ui.View):
         await interaction.response.send_modal(CryptoActionModal("sell", self.selected_symbol, self.cog))
 
 # ==========================================
-# КЛАС КОГА
+# КЛАС КОГА (ШІ АНАЛІЗ АКТИВНОСТІ РИНКУ)
 # ==========================================
 
 class CryptoCog(commands.Cog):
@@ -220,44 +221,76 @@ class CryptoCog(commands.Cog):
         return {
             "BUB": {
                 "name": "BubCoin", 
-                "price": 5000, 
+                "price": 1000, 
                 "owner": "None", 
                 "volatility": 0.02,
+                "momentum": 0.0,
+                "market_heat": 0.0,
+                "volume_buy": 0,    
+                "volume_sell": 0,   
                 "total_trades": 0,
                 "history": [] 
             }
         }
 
     def apply_market_impact(self, market, symbol, amount, is_buy=True):
+        """Миттєва реакція на угоди + Підігрів ринку"""
         if symbol not in market: return market
         
-        impact_factor = 0.001 
-        change = min(amount * impact_factor, 0.40)
+        info = market[symbol]
+        current_price = info["price"]
+        trade_value = amount * current_price
+        
+        liquidity = 500000 + (info.get("total_trades", 0) * 5000)
+        impact = (trade_value / liquidity) * 0.8
+        impact = max(0.001, min(impact, 0.35)) 
         
         if is_buy:
-            market[symbol]["price"] = int(market[symbol]["price"] * (1 + change))
+            info["price"] = int(current_price * (1 + impact))
+            info["volume_buy"] = info.get("volume_buy", 0) + trade_value
+            info["momentum"] = info.get("momentum", 0.0) + (impact * 0.5)
         else:
-            market[symbol]["price"] = int(market[symbol]["price"] * (1 - change))
+            info["price"] = int(current_price * (1 - impact))
+            info["volume_sell"] = info.get("volume_sell", 0) + trade_value
+            info["momentum"] = info.get("momentum", 0.0) - (impact * 0.8)
             
-        market[symbol]["price"] = max(100, market[symbol]["price"])
-        market[symbol]["total_trades"] = market[symbol].get("total_trades", 0) + 1
+        info["price"] = max(50, info["price"])
+        info["total_trades"] = info.get("total_trades", 0) + 1
+        info["momentum"] = max(-0.15, min(info["momentum"], 0.15))
+        
+        info["market_heat"] = min(1.0, info.get("market_heat", 0.0) + 0.1 + (impact * 2))
+        
         return market
 
     @tasks.loop(minutes=15)
     async def market_fluctuation(self):
-        """Рандомна зміна ціни кожні 15 хвилин"""
+        """Фоновий ШІ-аналіз активності кожні 15 хвилин"""
         if not os.path.exists("server_data"): return
+
         for guild_id_str in os.listdir("server_data"):
             try:
                 guild_id = int(guild_id_str)
                 market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
                 if not market: continue
 
-                for symbol in market:
-                    trend = random.uniform(-0.015, 0.016)
-                    vol = market[symbol].get("volatility", 0.02)
-                    noise = random.uniform(-vol, vol)
-                    market[symbol]["price"] = max(10, int(market[symbol]["price"] * (1 + trend + noise)))
+                for symbol, info in market.items():
+                    momentum = info.get("momentum", 0.0)
+                    base_volatility = info.get("volatility", 0.02)
+                    heat = info.get("market_heat", 0.0)
+                    
+                    current_volatility = base_volatility * (0.2 + 0.8 * heat)
+                    stagnation_penalty = -0.002 * heat
+                    
+                    noise = random.uniform(-current_volatility, current_volatility)
+                    
+                    total_multiplier = 1.0 + momentum + noise + stagnation_penalty
+                    info["price"] = max(10, int(info["price"] * total_multiplier))
+                    
+                    info["market_heat"] = heat * 0.8 
+                    info["momentum"] *= 0.7 
+                    
+                    info["volume_buy"] = 0
+                    info["volume_sell"] = 0
 
                 save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
             except Exception as e:
@@ -265,7 +298,7 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(time=SAVE_TIMES)
     async def track_crypto_history(self):
-        """Зберігає поточну ціну в історію кожні 2 години рівно о 00:00, 02:00, 04:00..."""
+        """Зберігає поточну ціну в історію кожні 2 години"""
         if not os.path.exists("server_data"): return
         current_time = int(time.time())
         week_ago = current_time - (7 * 24 * 3600) 
@@ -291,14 +324,21 @@ class CryptoCog(commands.Cog):
                     
                 if updated:
                     save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
-                    logger.info(f"Історія крипти для гільдії {guild_id} успішно збережена за графіком.")
                     
             except Exception as e:
                 logger.error(f"Помилка запису історії крипти {guild_id_str}: {e}")
 
+    @market_fluctuation.before_loop
+    async def before_fluctuation(self):
+        await self.bot.wait_until_ready()
+
     @track_crypto_history.before_loop
     async def before_track_history(self):
         await self.bot.wait_until_ready()
+
+    # ==========================================
+    # КОМАНДИ
+    # ==========================================
 
     @app_commands.command(name="crypto", description="Курси валют та торгівля")
     @app_commands.guild_only()
@@ -313,16 +353,18 @@ class CryptoCog(commands.Cog):
             market = self.get_default_market()
             save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
         
-        embed = discord.Embed(title="Крипто-Біржа", color=0xF2A900)
-        embed.set_footer(text="Ціни змінюються кожні 15 хв залежно від попиту")
+        embed = discord.Embed(title="📈 Крипто-Біржа", color=0xF2A900)
+        embed.set_footer(text="Ціни змінюються динамічно залежно від попиту гравців")
 
         for symbol, info in market.items():
             price = info["price"]
             buy_p = int(price * (1 + config.get("buy_commission", 0.05)))
             sell_p = int(price * (1 - config.get("sell_commission", 0.05) - config.get("market_spread", 0.10)))
             
+            trend_icon = "🚀" if info.get("momentum", 0) > 0.02 else "📉" if info.get("momentum", 0) < -0.02 else "⚖️"
+            
             embed.add_field(
-                name=f"{info['name']} ({symbol})",
+                name=f"{trend_icon} {info['name']} ({symbol})",
                 value=f"Курс: `{price} AC`\n📥 Купівля: `{buy_p}`\n📤 Продаж: `{sell_p}`",
                 inline=True
             )
@@ -362,6 +404,8 @@ class CryptoCog(commands.Cog):
             "price": 1000,
             "owner": interaction.user.id,
             "volatility": 0.05,
+            "momentum": 0.0,
+            "market_heat": 1.0,
             "total_trades": 0,
             "history": [{"time": int(time.time()), "price": 1000}] 
         }
@@ -370,7 +414,7 @@ class CryptoCog(commands.Cog):
         save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
         save_guild_json(guild_id, ECONOMY_CONFIG, config)
         
-        await interaction.response.send_message(f"Вітаємо! Валюта **{name} ({symbol})** тепер на біржі!")
+        await interaction.response.send_message(f"🎉 Вітаємо! Валюта **{name} ({symbol})** тепер на біржі!")
 
     @app_commands.command(name="pay_crypto", description="Переказати криптовалюту іншому гравцю")
     @app_commands.describe(
@@ -413,14 +457,13 @@ class CryptoCog(commands.Cog):
             return await interaction.response.send_message(f"У вас недостатньо **{symbol}**! Ваш баланс: `{sender_crypto_balance}`.", ephemeral=True)
 
         sender["crypto"][symbol] -= amount
-        
         receiver.setdefault("crypto", {})[symbol] = receiver["crypto"].get(symbol, 0) + amount
 
         save_guild_json(guild_id, DATA_FILE, data)
 
         await interaction.response.send_message(f"💸 Ви успішно переказали **{amount} {symbol}** гравцю {member.mention}!")
 
-    @app_commands.command(name="delete_crypto", description="[Адмін] Видалити валюту ")
+    @app_commands.command(name="delete_crypto", description="[Адмін] Видалити валюту")
     @app_commands.guild_only()
     async def delete_crypto(self, interaction: discord.Interaction, symbol: str):
         await interaction.response.defer()
