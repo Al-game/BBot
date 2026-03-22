@@ -29,6 +29,18 @@ class ItemsCog(commands.Cog):
     def format_id(self, item_id: str) -> str:
         return item_id.lower().strip().replace(" ", "_")
 
+    def get_item_sort_key(self, item_info):
+        rarity_ranks = {
+            "🟡 Legendary": 1,
+            "🟣 Epic": 2,
+            "🔵 Rare": 3,
+            "⚪ Common": 4
+        }
+        rarity = item_info.get('rarity', '⚪ Common')
+        name = item_info.get('name', 'Unknown')
+        rank = rarity_ranks.get(rarity, 5)
+        return (rank, name.lower())
+
     async def remove_role_later(self, member: discord.User, role: discord.Role, minutes: int):
         await asyncio.sleep(minutes * 60)
         try:
@@ -47,10 +59,12 @@ class ItemsCog(commands.Cog):
         if not templates:
             return await interaction.response.send_message("База предметів порожня.", ephemeral=True)
 
+        sorted_items = sorted(templates.items(), key=lambda x: self.get_item_sort_key(x[1]))
+
         embed = discord.Embed(title="Реєстр предметів сервера", color=0x95a5a6)
         
         lines = []
-        for i_id, info in templates.items():
+        for i_id, info in sorted_items:
             lines.append(f"{info['rarity']} **{info['name']}** `[{i_id}]`")
         
         embed.description = "\n".join(lines)
@@ -70,125 +84,13 @@ class ItemsCog(commands.Cog):
             return await interaction.response.send_message("Ваш рюкзак порожній.", ephemeral=True)
 
         counts = Counter(user_inv)
+        
+        sorted_inv = sorted(counts.items(), key=lambda x: self.get_item_sort_key(templates.get(x[0], {})))
+
         embed = discord.Embed(title=f"Інвентар {interaction.user.display_name}", color=0x3498db)
         
         lines = []
-        for i_id, count in counts.items():
-            item = templates.get(i_id, {"name": "Unknown", "rarity": "❓"})
-            lines.append(f"{item['rarity']} **{item['name']}** `[{i_id}]` x{count}")
-        
-        embed.description = "\n".join(lines)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="gift", description="Подарувати предмет іншому гравцю")
-    @app_commands.guild_only()
-    async def gift(self, interaction: discord.Interaction, member: discord.User, item_id: str, amount: int = 1):
-        if amount <= 0 or member.id == interaction.user.id or member.bot:
-            return await interaction.response.send_message("Некоректна кількість або ціль.", ephemeral=True)
-
-        guild_id = interaction.guild.id
-        processed_id = self.format_id(item_id)
-        templates = load_guild_json(guild_id, ITEMS_TEMPLATES)
-        
-        if processed_id not in templates:
-            return await interaction.response.send_message("Такого предмета не існує.", ephemeral=True)
-
-        data = load_guild_json(guild_id, DATA_FILE)
-        sender = self.get_user(data, interaction.user.id)
-        receiver = self.get_user(data, member.id)
-
-        if sender["inventory"].count(processed_id) < amount:
-            return await interaction.response.send_message(f"У вас недостатньо `{processed_id}` x{amount}.", ephemeral=True)
-
-        for _ in range(amount):
-            sender["inventory"].remove(processed_id)
-            receiver["inventory"].append(processed_id)
-
-        save_guild_json(guild_id, DATA_FILE, data)
-        await interaction.response.send_message(f"🎁 {interaction.user.mention} подарував {member.mention} **{templates[processed_id]['name']}** (x{amount})!")
-
-    @app_commands.command(name="item_delete", description="Видалити шаблон предмета з бази")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    async def item_delete(self, interaction: discord.Interaction, item_id: str):
-        guild_id = interaction.guild.id
-        templates = load_guild_json(guild_id, ITEMS_TEMPLATES)
-        
-        processed_id = self.format_id(item_id)
-
-        if processed_id not in templates:
-            return await interaction.response.send_message(
-                f"Предмет з ID `{processed_id}` не знайдено в базі!", 
-                ephemeral=True
-            )
-
-        item_name = templates[processed_id].get('name', 'Невідомий предмет')
-        
-        del templates[processed_id]
-        
-        save_guild_json(guild_id, ITEMS_TEMPLATES, templates)
-        
-        emb = discord.Embed(
-            title="Предмет видалено", 
-            description=f"Шаблон предмета **{item_name}** (`{processed_id}`) повністю видалено з бази сервера.",
-            color=0xe74c3c
-        )
-        await interaction.response.send_message(embed=emb)
-
-    @app_commands.command(name="items_list", description="Переглянути всі існуючі предмети")
-    @app_commands.guild_only()
-    async def items_list(self, interaction: discord.Interaction):
-        guild_id = interaction.guild.id
-        templates = load_guild_json(guild_id, ITEMS_TEMPLATES)
-        
-        if not templates:
-            return await interaction.response.send_message("База предметів порожня.", ephemeral=True)
-
-        embed = discord.Embed(title="Реєстр предметів сервера", color=0x95a5a6)
-        
-        lines = []
-        for i_id, info in templates.items():
-            lines.append(f"{info['rarity']} **{info['name']}** `[{i_id}]`")
-        
-        embed.description = "\n".join(lines)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="item_give", description="Видати предмет гравцю")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    async def item_give(self, interaction: discord.Interaction, member: discord.User, item_id: str):
-        guild_id = interaction.guild.id
-        templates = load_guild_json(guild_id, ITEMS_TEMPLATES)
-        processed_id = self.format_id(item_id)
-        
-        if processed_id not in templates:
-            return await interaction.response.send_message(f"Предмет з ID `{processed_id}` не знайдено!", ephemeral=True)
-
-        data = load_guild_json(guild_id, DATA_FILE)
-        user = self.get_user(data, member.id)
-        
-        user["inventory"].append(processed_id)
-        save_guild_json(guild_id, DATA_FILE, data)
-        await interaction.response.send_message(f"🎁 {member.mention} отримав **{templates[processed_id]['name']}**!")
-
-    @app_commands.command(name="inventory", description="Переглянути свій рюкзак")
-    @app_commands.guild_only()
-    async def inventory(self, interaction: discord.Interaction):
-        guild_id = interaction.guild.id
-        data = load_guild_json(guild_id, DATA_FILE)
-        templates = load_guild_json(guild_id, ITEMS_TEMPLATES)
-        
-        user = self.get_user(data, interaction.user.id)
-        user_inv = user.get("inventory", [])
-        
-        if not user_inv:
-            return await interaction.response.send_message("Ваш рюкзак порожній.", ephemeral=True)
-
-        counts = Counter(user_inv)
-        embed = discord.Embed(title=f"Інвентар {interaction.user.display_name}", color=0x3498db)
-        
-        lines = []
-        for i_id, count in counts.items():
+        for i_id, count in sorted_inv:
             item = templates.get(i_id, {"name": "Unknown", "rarity": "❓"})
             lines.append(f"{item['rarity']} **{item['name']}** `[{i_id}]` x{count}")
         
@@ -383,8 +285,6 @@ class ItemsCog(commands.Cog):
         user["inventory"].append(processed_id)
         save_guild_json(guild_id, DATA_FILE, data)
         await interaction.response.send_message(f"🎁 {member.mention} отримав **{templates[processed_id]['name']}**!")
-
-
 
 async def setup(bot):
     await bot.add_cog(ItemsCog(bot))

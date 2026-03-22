@@ -241,24 +241,27 @@ class CryptoCog(commands.Cog):
         current_price = info["price"]
         trade_value = amount * current_price
         
-        liquidity = 500000 + (info.get("total_trades", 0) * 5000)
-        impact = (trade_value / liquidity) * 0.8
-        impact = max(0.001, min(impact, 0.35)) 
+        liquidity = 200000 + (info.get("total_trades", 0) * 2000)
+        
+        impact = (trade_value / liquidity) * 1.5
+        
+        impact = max(0.005, min(impact, 0.50)) 
         
         if is_buy:
             info["price"] = int(current_price * (1 + impact))
             info["volume_buy"] = info.get("volume_buy", 0) + trade_value
-            info["momentum"] = info.get("momentum", 0.0) + (impact * 0.5)
+            info["momentum"] = info.get("momentum", 0.0) + (impact * 0.8)
         else:
             info["price"] = int(current_price * (1 - impact))
             info["volume_sell"] = info.get("volume_sell", 0) + trade_value
-            info["momentum"] = info.get("momentum", 0.0) - (impact * 0.8)
+            info["momentum"] = info.get("momentum", 0.0) - (impact * 1.2)
             
         info["price"] = max(50, info["price"])
         info["total_trades"] = info.get("total_trades", 0) + 1
-        info["momentum"] = max(-0.15, min(info["momentum"], 0.15))
         
-        info["market_heat"] = min(1.0, info.get("market_heat", 0.0) + 0.1 + (impact * 2))
+        info["momentum"] = max(-0.25, min(info["momentum"], 0.25))
+        
+        info["market_heat"] = min(1.0, info.get("market_heat", 0.0) + 0.15 + (impact * 3))
         
         return market
 
@@ -279,14 +282,15 @@ class CryptoCog(commands.Cog):
                     heat = info.get("market_heat", 0.0)
                     
                     current_volatility = base_volatility * (0.2 + 0.8 * heat)
-                    stagnation_penalty = -0.002 * heat
+                    
+                    stagnation_penalty = -0.0006 * heat
                     
                     noise = random.uniform(-current_volatility, current_volatility)
                     
                     total_multiplier = 1.0 + momentum + noise + stagnation_penalty
                     info["price"] = max(10, int(info["price"] * total_multiplier))
                     
-                    info["market_heat"] = heat * 0.8 
+                    info["market_heat"] = heat * 0.85 
                     info["momentum"] *= 0.7 
                     
                     info["volume_buy"] = 0
