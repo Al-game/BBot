@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 from utils import load_guild_json, save_guild_json
 
@@ -8,12 +8,12 @@ ITEMS_TEMPLATES = "items_templates.json"
 SHOP_FILE = "shop_stock.json"
 
 RARITY_ORDER = {
-    "міфічна": 6,
-    "легендарна": 5,
-    "епічна": 4,
-    "рідкісна": 3,
-    "незвичайна": 2,
-    "звичайна": 1
+    "міфічна": 6, "міфічний": 6, "mythic": 6,
+    "легендарна": 5, "легендарний": 5, "legendary": 5,
+    "епічна": 4, "епічний": 4, "epic": 4,
+    "рідкісна": 3, "рідкісний": 3, "rare": 3,
+    "незвичайна": 2, "незвичайний": 2, "uncommon": 2,
+    "звичайна": 1, "звичайний": 1, "common": 1
 }
 
 class ShopCog(commands.Cog):
@@ -39,8 +39,9 @@ class ShopCog(commands.Cog):
             return 0
         return RARITY_ORDER.get(rarity_str.lower().strip(), 0)
 
-    @app_commands.command(name="shop_remove", description="Видалити предмет з вітрини магазину")
+    @app_commands.command(name="shop_remove", description="[Адмін] Видалити предмет з вітрини магазину")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def shop_remove(self, interaction: discord.Interaction, item_id: str):
         guild_id = interaction.guild.id
@@ -50,10 +51,9 @@ class ShopCog(commands.Cog):
         if processed_id in shop:
             del shop[processed_id]
             save_guild_json(guild_id, SHOP_FILE, shop)
-            await interaction.response.send_message(f"Предмет `{processed_id}` прибрано з магазину.")
+            await interaction.response.send_message(f"Предмет `{processed_id}` прибрано з магазину.", ephemeral=True)
         else:
             await interaction.response.send_message("Цього предмета немає в магазині.", ephemeral=True)
-
 
     @app_commands.command(name="shop", description="Показати товари в магазині")
     @app_commands.guild_only()
@@ -74,7 +74,7 @@ class ShopCog(commands.Cog):
             if item:
                 shop_items.append((i_id, info, item))
 
-        shop_items.sort(key=lambda x: self.get_rarity_weight(x[2].get('rarity', '')), reverse=True)
+        shop_items.sort(key=lambda x: (self.get_rarity_weight(x[2].get('rarity', '')), x[1].get('price', 0)), reverse=True)
 
         fields_count = 0
         for i_id, info, item in shop_items:
@@ -164,6 +164,7 @@ class ShopCog(commands.Cog):
 
     @app_commands.command(name="shop_add", description="[Адмін] Додати предмет у магазин")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def shop_add(self, interaction: discord.Interaction, item_id: str, price: int, sell_price: int, stock: int = -1):
         guild_id = interaction.guild.id
@@ -183,11 +184,13 @@ class ShopCog(commands.Cog):
         save_guild_json(guild_id, SHOP_FILE, shop)
         await interaction.response.send_message(
             f"Предмет **{templates[processed_id]['name']}** додано в магазин!\n"
-            f"💰 Ціна: `{price} AC` | 💵 Викуп: `{sell_price} AC` | 📦 Сток: {'∞' if stock == -1 else stock}"
+            f"💰 Ціна: `{price} AC` | 💵 Викуп: `{sell_price} AC` | 📦 Сток: {'∞' if stock == -1 else stock}",
+            ephemeral=True
         )
 
     @app_commands.command(name="shop_restock", description="[Адмін] Поповнити кількість товару в магазині")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def shop_restock(self, interaction: discord.Interaction, item_id: str, amount: int):
         if amount <= 0:
@@ -215,7 +218,7 @@ class ShopCog(commands.Cog):
             f"📥 Додано: `{amount} шт.`\n"
             f"📊 Поточний запас: `{shop[processed_id]['stock']} шт.`"
         )
-        await interaction.response.send_message(embed=emb)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
 
 
 async def setup(bot):
