@@ -24,7 +24,6 @@ CRYPTO_MARKET_FILE = "crypto_market.json"
 
 
 def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
-    """Генерує свічковий графік (мінімалізм, світлі пастельні кольори 🌿)"""
     info = market_data.get(symbol)
     
     if not info or "history" not in info or len(info["history"]) < 2:
@@ -79,7 +78,6 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     buf.seek(0)
     return buf
 class CryptoActionModal(discord.ui.Modal):
-    """ТВІЙ ОРИГІНАЛЬНИЙ КЛАС ДЛЯ РИНКОВОЇ КУПІВЛІ/ПРОДАЖУ З УСІМА ПОДАТКАМИ"""
     def __init__(self, action: str, symbol: str, cog: commands.Cog):
         title = f"Купівля {symbol}" if action == "buy" else f"Продаж {symbol}"
         super().__init__(title=title)
@@ -365,7 +363,7 @@ class CryptoDashboardView(discord.ui.View):
     async def search_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CryptoSearchModal(self.cog, self.market))
 
-class AdvancedCryptoCog(commands.Cog):
+class CryptoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.market_fluctuation.start()
@@ -589,7 +587,6 @@ class AdvancedCryptoCog(commands.Cog):
             save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
 
         embed = discord.Embed(
-            title="🌿 Woodland Rise: Економічний Хаб", 
             description="Огляд поточного стану ринку. Натисніть кнопку, щоб знайти актив для торгівлі.",
             color=0xFDFCFB
         )
@@ -717,4 +714,4 @@ class AdvancedCryptoCog(commands.Cog):
         await interaction.followup.send(f"Валюту **{symbol}** видалено. Компенсацію виплачено {count} гравцям.")
 
 async def setup(bot):
-    await bot.add_cog(AdvancedCryptoCog(bot))
+    await bot.add_cog(CryptoCog(bot))
