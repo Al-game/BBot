@@ -8,6 +8,7 @@ from datetime import datetime, timezone, time as dt_time
 from matplotlib import pyplot as plt
 import pandas as pd
 import mplfinance as mpf
+import matplotlib.pyplot as plt 
 from utils import load_guild_json, save_guild_json
 
 logging.basicConfig(level=logging.INFO)
@@ -18,14 +19,30 @@ DATA_FILE = "users.json"
 ECONOMY_CONFIG = "economy_config.json"
 CRYPTO_MARKET_FILE = "crypto_market.json"
 
+
+
+
+
 def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     """Генерує свічковий графік (мінімалізм, світлі пастельні кольори 🌿)"""
     info = market_data.get(symbol)
     
     if not info or "history" not in info or len(info["history"]) < 2:
-        fig, ax = mpf.plot(pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume']), returnfig=True)
+        fig, ax = plt.subplots(figsize=(10, 5))
+        
+        fig.patch.set_facecolor('#FDFCFB')
+        ax.set_facecolor('#FDFCFB')
+        
+        ax.text(0.5, 0.5, '🌱 Недостатньо даних для графіка', 
+                ha='center', va='center', fontsize=14, color='#555555', transform=ax.transAxes)
+        
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', facecolor='#FDFCFB')
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100, facecolor=fig.get_facecolor())
         plt.close(fig)
         buf.seek(0)
         return buf
@@ -35,7 +52,7 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     df.set_index('Date', inplace=True)
     
     mc = mpf.make_marketcolors(
-        up='#A8E6CF',  
+        up='#A8E6CF', 
         down='#FF8B94',
         edge='inherit',
         wick='black',
@@ -61,7 +78,6 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     )
     buf.seek(0)
     return buf
-
 class CryptoActionModal(discord.ui.Modal):
     """ТВІЙ ОРИГІНАЛЬНИЙ КЛАС ДЛЯ РИНКОВОЇ КУПІВЛІ/ПРОДАЖУ З УСІМА ПОДАТКАМИ"""
     def __init__(self, action: str, symbol: str, cog: commands.Cog):
@@ -278,10 +294,37 @@ class CoinDetailView(discord.ui.View):
     async def limit_sell_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(LimitOrderModal("sell", self.symbol, self.cog))
 
-    @discord.ui.button(label="Стейкінг", style=discord.ButtonStyle.primary, emoji="🌳", row=2)
+    @discord.ui.button(label="Стейкінг", style=discord.ButtonStyle.primary, row=2)
     async def stake_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(StakingModal(self.symbol, self.cog))
 
+    @discord.ui.button(label="Оновити", style=discord.ButtonStyle.secondary, emoji="🔄", row=2)
+    async def update_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        guild_id = interaction.guild.id
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        
+        if self.symbol not in market:
+            return await interaction.followup.send(" Валюту більше не знайдено на біржі.", ephemeral=True)
+            
+        info = market[self.symbol]
+        
+        embed = discord.Embed(title=f"Деталі: {info['name']} ({self.symbol})", color=0xA8E6CF)
+        
+        circulating = info.get("circulating_supply", 0)
+        max_sup = info.get("max_supply", "Необмежено")
+        burned = round(info.get("burned", 0), 2)
+        
+        embed.add_field(name="Поточний курс", value=f"`{info['price']} AC`", inline=True)
+        embed.add_field(name="Емісія", value=f"`{circulating} / {max_sup}`", inline=True)
+        embed.add_field(name="Спалено", value=f"`{burned}`", inline=True)
+        
+        chart_buffer = await asyncio.to_thread(generate_ohlc_chart, market, self.symbol)
+        file = discord.File(chart_buffer, filename=f"{self.symbol}_chart.png")
+        embed.set_image(url=f"attachment://{self.symbol}_chart.png")
+
+        await interaction.edit_original_response(embed=embed, attachments=[file], view=self)
 class CryptoSearchModal(discord.ui.Modal, title='Пошук Активу'):
     symbol_input = discord.ui.TextInput(label='Введіть тікер (напр. BUB)', max_length=4, required=True)
 
