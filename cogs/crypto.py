@@ -18,6 +18,7 @@ DATA_FILE = "users.json"
 ECONOMY_CONFIG = "economy_config.json"
 CRYPTO_MARKET_FILE = "crypto_market.json"
 
+
 def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     info = market_data.get(symbol)
     
@@ -26,7 +27,7 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
         fig.patch.set_facecolor('#FDFCFB')
         ax.set_facecolor('#FDFCFB')
         
-        ax.text(0.5, 0.5, 'Недостатньо даних для графіка', 
+        ax.text(0.5, 0.5, '🌱 Недостатньо даних для графіка', 
                 ha='center', va='center', fontsize=14, color='#555555', transform=ax.transAxes)
         
         for spine in ax.spines.values():
@@ -71,6 +72,85 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     )
     buf.seek(0)
     return buf
+
+def get_my_orders_embed(uid: str, market: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="Ваші активні ордери",
+        description="Список лімітів, які очікують досягнення бажаної ціни.",
+        color=0xA8E6CF 
+    )
+    has_orders = False
+    
+    for symbol, info in market.items():
+        order_book = info.get("order_book", {"buy": [], "sell": []})
+        
+        for order in order_book.get("buy", []):
+            if order["uid"] == uid:
+                has_orders = True
+                cost = int(order["amount"] * order["price"])
+                embed.add_field(
+                    name=f"📥 Купівля {symbol}", 
+                    value=f"**К-сть:** `{order['amount']}` | **Ціна:** `{order['price']} AC`\n**Заморожено:** `{cost} AC`", 
+                    inline=False
+                )
+                
+        for order in order_book.get("sell", []):
+            if order["uid"] == uid:
+                has_orders = True
+                profit = int(order["amount"] * order["price"])
+                embed.add_field(
+                    name=f"📤 Продаж {symbol}", 
+                    value=f"**К-сть:** `{order['amount']}` | **Ціна:** `{order['price']} AC`\n**Очікувано:** ~`{profit} AC`", 
+                    inline=False
+                )
+                
+    if not has_orders:
+        embed.description = "У вас наразі немає активних лімітних ордерів. Ринок чекає!"
+    return embed
+
+def get_my_staking_embed(uid: str, data: dict, market: dict) -> discord.Embed:
+    user = data.get(uid, {})
+    stakes = user.get("staking", {})
+    
+    if not stakes:
+        return discord.Embed(
+            title="Ваші Депозити (Стейкінг)",
+            description="У вас наразі немає заблокованих активів. Використовуйте біржу, щоб зробити депозит!",
+            color=0xA8E6CF
+        )
+        
+    embed = discord.Embed(
+        title="Ваші Депозити (Стейкінг)",
+        description="Огляд заблокованих активів та щоденного пасивного доходу.",
+        color=0xA8E6CF 
+    )
+    
+    total_daily_ac = 0
+    
+    for symbol, stake_info in stakes.items():
+        if symbol not in market: continue
+        
+        amount = stake_info["amount"]
+        yearly_reward = amount * 0.05
+        daily_reward = yearly_reward / 365
+        
+        current_price = market[symbol]["price"]
+        daily_ac = daily_reward * current_price
+        total_daily_ac += daily_ac
+        
+        embed.add_field(
+            name=f"{market[symbol]['name']} ({symbol})",
+            value=(
+                f"**Заблоковано:** `{amount:.2f}` монет\n"
+                f"**Ставка (APY):** `5%` річних\n"
+                f"**Капає щодня:** `+ {daily_reward:.4f}` монет\n"
+                f"*~ {int(daily_ac)} AC на день*"
+            ),
+            inline=False
+        )
+        
+    embed.set_footer(text=f"Загальний прогнозований дохід: ~ {int(total_daily_ac)} AC/день")
+    return embed
 
 class CryptoActionModal(discord.ui.Modal):
     def __init__(self, action: str, symbol: str, cog: commands.Cog):
@@ -368,7 +448,7 @@ class CryptoSearchModal(discord.ui.Modal, title='Пошук Активу'):
     async def on_submit(self, interaction: discord.Interaction):
         symbol = self.symbol_input.value.upper()
         if symbol not in self.market:
-            return await interaction.response.send_message(f"🍃 Валюту **{symbol}** не знайдено.", ephemeral=True)
+            return await interaction.response.send_message(f"Валюту **{symbol}** не знайдено.", ephemeral=True)
         
         info = self.market[symbol]
         embed = discord.Embed(title=f"Деталі: {info['name']} ({symbol})", color=0xA8E6CF)
@@ -387,15 +467,138 @@ class CryptoSearchModal(discord.ui.Modal, title='Пошук Активу'):
 
         await interaction.response.send_message(embed=embed, file=file, view=CoinDetailView(self.cog, symbol), ephemeral=True)
 
+class CancelOrderSelect(discord.ui.Select):
+    def __init__(self, uid: str, market: dict):
+        options = []
+        for symbol, info in market.items():
+            order_book = info.get("order_book", {"buy": [], "sell": []})
+            for action in ["buy", "sell"]:
+                for order in order_book.get(action, []):
+                    if order["uid"] == uid:
+                        act_name = "Купівля" if action == "buy" else "Продаж"
+                        emoji = "📥" if action == "buy" else "📤"
+                        val = f"{action}|{symbol}|{order['timestamp']}"
+                        options.append(discord.SelectOption(
+                            label=f"{act_name} {symbol} ({order['price']} AC)",
+                            description=f"Кількість: {order['amount']} шт.",
+                            value=val, emoji=emoji
+                        ))
+        
+        if not options:
+            options.append(discord.SelectOption(label="Порожньо", value="none"))
+            super().__init__(placeholder="Немає ордерів для скасування", min_values=1, max_values=1, options=options, disabled=True)
+        else:
+            super().__init__(placeholder="Оберіть ордер для скасування...", min_values=1, max_values=1, options=options[:25])
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none": return
+        
+        action, symbol, timestamp_str = self.values[0].split("|")
+        timestamp = int(timestamp_str)
+        
+        guild_id = interaction.guild.id
+        uid = str(interaction.user.id)
+        data = load_guild_json(guild_id, DATA_FILE)
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        user = data.setdefault(uid, {"balance": 0, "crypto": {}})
+        
+        order_book = market[symbol].get("order_book", {"buy": [], "sell": []})
+        order_to_cancel = next((o for o in order_book[action] if o["uid"] == uid and o["timestamp"] == timestamp), None)
+        
+        if not order_to_cancel:
+            return await interaction.response.send_message("Ордер не знайдено (можливо, він щойно виконався автоматично).", ephemeral=True)
+            
+        order_book[action].remove(order_to_cancel)
+        if action == "buy":
+            refund = int(order_to_cancel["amount"] * order_to_cancel["price"])
+            user["balance"] += refund
+            msg = f"Ордер скасовано! Вам повернуто `{refund} AC` на баланс."
+        else:
+            refund = order_to_cancel["amount"]
+            user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + refund
+            msg = f"Ордер скасовано! Вам повернуто `{refund} {symbol}` у гаманець."
+            
+        save_guild_json(guild_id, DATA_FILE, data)
+        save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
+        
+        new_embed = get_my_orders_embed(uid, market)
+        new_view = MyOrdersView(uid, market)
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.followup.send(msg, ephemeral=True)
+
+class CancelAllButton(discord.ui.Button):
+    def __init__(self, disabled: bool):
+        super().__init__(label="Скасувати ВСІ", style=discord.ButtonStyle.danger, emoji="💥", row=1, disabled=disabled)
+        
+    async def callback(self, interaction: discord.Interaction):
+        guild_id = interaction.guild.id
+        uid = str(interaction.user.id)
+        data = load_guild_json(guild_id, DATA_FILE)
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        user = data.setdefault(uid, {"balance": 0, "crypto": {}})
+        
+        refund_ac = 0
+        
+        for symbol, info in market.items():
+            order_book = info.get("order_book", {"buy": [], "sell": []})
+            
+            user_buys = [o for o in order_book["buy"] if o["uid"] == uid]
+            for o in user_buys:
+                refund_ac += int(o["amount"] * o["price"])
+                order_book["buy"].remove(o)
+                
+            user_sells = [o for o in order_book["sell"] if o["uid"] == uid]
+            for o in user_sells:
+                amt = o["amount"]
+                user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + amt
+                order_book["sell"].remove(o)
+                
+        user["balance"] += refund_ac
+        
+        save_guild_json(guild_id, DATA_FILE, data)
+        save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
+        
+        new_embed = get_my_orders_embed(uid, market)
+        new_view = MyOrdersView(uid, market)
+        await interaction.response.edit_message(embed=new_embed, view=new_view)
+        await interaction.followup.send(f"Всі ордери скасовано! Повернуто: `{refund_ac} AC` та активи.", ephemeral=True)
+
+class MyOrdersView(discord.ui.View):
+    def __init__(self, uid: str, market: dict):
+        super().__init__(timeout=None)
+        has_orders = any(o["uid"] == uid for info in market.values() for act in ["buy", "sell"] for o in info.get("order_book", {}).get(act, []))
+        self.add_item(CancelOrderSelect(uid, market))
+        self.add_item(CancelAllButton(disabled=not has_orders))
+
 class CryptoDashboardView(discord.ui.View):
     def __init__(self, cog: commands.Cog, market: dict):
         super().__init__(timeout=None)
         self.cog = cog
         self.market = market
 
-    @discord.ui.button(label="🔍 Знайти валюту", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Знайти актив", style=discord.ButtonStyle.secondary)
     async def search_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CryptoSearchModal(self.cog, self.market))
+
+    @discord.ui.button(label="Мої Ордери", style=discord.ButtonStyle.primary)
+    async def my_orders_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild.id
+        uid = str(interaction.user.id)
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        
+        embed = get_my_orders_embed(uid, market)
+        view = MyOrdersView(uid, market)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="Мій Стейкінг", style=discord.ButtonStyle.success)
+    async def my_staking_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild.id
+        uid = str(interaction.user.id)
+        data = load_guild_json(guild_id, DATA_FILE)
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        
+        embed = get_my_staking_embed(uid, data, market)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 class CryptoCog(commands.Cog):
     def __init__(self, bot):
@@ -615,7 +818,8 @@ class CryptoCog(commands.Cog):
             save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
 
         embed = discord.Embed(
-            description="Огляд поточного стану ринку. Натисніть кнопку, щоб знайти актив для торгівлі.",
+            title="Економічний Хаб",
+            description="Огляд поточного стану ринку. Оберіть дію нижче.",
             color=0xFDFCFB
         )
         
@@ -710,59 +914,6 @@ class CryptoCog(commands.Cog):
 
         save_guild_json(guild_id, DATA_FILE, data)
         await interaction.response.send_message(f"💸 Ви переказали **{amount} {symbol}** гравцю {member.mention}!")
-
-    @app_commands.command(name="my_staking", description="Переглянути ваші активні депозити та пасивний дохід")
-    @app_commands.guild_only()
-    async def my_staking(self, interaction: discord.Interaction):
-        guild_id = interaction.guild.id
-        data = load_guild_json(guild_id, DATA_FILE)
-        uid = str(interaction.user.id)
-        
-        user = data.get(uid, {})
-        stakes = user.get("staking", {})
-        
-        if not stakes:
-            return await interaction.response.send_message(
-                "У вас наразі немає заблокованих активів. Використовуйте біржу, щоб зробити депозит!", 
-                ephemeral=True
-            )
-            
-        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
-        
-        embed = discord.Embed(
-            title="Стейкінг",
-            description="Огляд заблокованих активів та щоденного пасивного доходу.",
-            color=0xA8E6CF 
-        )
-        
-        total_daily_ac = 0
-        
-        for symbol, stake_info in stakes.items():
-            if symbol not in market: continue
-            
-            amount = stake_info["amount"]
-            
-            yearly_reward = amount * 0.05
-            daily_reward = yearly_reward / 365
-            
-            current_price = market[symbol]["price"]
-            daily_ac = daily_reward * current_price
-            total_daily_ac += daily_ac
-            
-            embed.add_field(
-                name=f"{market[symbol]['name']} ({symbol})",
-                value=(
-                    f"**Заблоковано:** `{amount:.2f}` монет\n"
-                    f"**Ставка (APY):** `5%`\n"
-                    f"**Капає щодня:** `+ {daily_reward:.4f}` монет\n"
-                    f"*~ {int(daily_ac)} AC на день*"
-                ),
-                inline=False
-            )
-            
-        embed.set_footer(text=f"Загальний прогнозований дохід: ~ {int(total_daily_ac)} AC/день")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="delete_crypto", description="[Адмін] Видалити валюту")
     @app_commands.guild_only()
