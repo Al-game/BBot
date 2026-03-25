@@ -7,7 +7,9 @@ import asyncio
 from datetime import datetime, timezone, time as dt_time
 import pandas as pd
 import mplfinance as mpf
-import matplotlib.pyplot as plt 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from utils import load_guild_json, save_guild_json
 
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +20,6 @@ DATA_FILE = "users.json"
 ECONOMY_CONFIG = "economy_config.json"
 CRYPTO_MARKET_FILE = "crypto_market.json"
 
-
 def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     info = market_data.get(symbol)
     
@@ -27,7 +28,7 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
         fig.patch.set_facecolor('#FDFCFB')
         ax.set_facecolor('#FDFCFB')
         
-        ax.text(0.5, 0.5, '🌱 Недостатньо даних для графіка', 
+        ax.text(0.5, 0.5, 'Недостатньо даних для графіка', 
                 ha='center', va='center', fontsize=14, color='#555555', transform=ax.transAxes)
         
         for spine in ax.spines.values():
@@ -73,13 +74,16 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     buf.seek(0)
     return buf
 
-def get_my_orders_embed(uid: str, market: dict) -> discord.Embed:
+def get_my_orders_embed(uid: str, market: dict, config: dict) -> discord.Embed:
     embed = discord.Embed(
         title="Ваші активні ордери",
         description="Список лімітів, які очікують досягнення бажаної ціни.",
         color=0xA8E6CF 
     )
     has_orders = False
+    buy_commission = config.get("buy_commission", 0.05)
+    sell_commission = config.get("sell_commission", 0.05)
+    market_spread = config.get("market_spread", 0.10)
     
     for symbol, info in market.items():
         order_book = info.get("order_book", {"buy": [], "sell": []})
@@ -87,7 +91,7 @@ def get_my_orders_embed(uid: str, market: dict) -> discord.Embed:
         for order in order_book.get("buy", []):
             if order["uid"] == uid:
                 has_orders = True
-                cost = int(order["amount"] * order["price"])
+                cost = int(order["amount"] * order["price"] * (1 + buy_commission))
                 embed.add_field(
                     name=f"📥 Купівля {symbol}", 
                     value=f"**К-сть:** `{order['amount']}` | **Ціна:** `{order['price']} AC`\n**Заморожено:** `{cost} AC`", 
@@ -97,7 +101,7 @@ def get_my_orders_embed(uid: str, market: dict) -> discord.Embed:
         for order in order_book.get("sell", []):
             if order["uid"] == uid:
                 has_orders = True
-                profit = int(order["amount"] * order["price"])
+                profit = int(order["amount"] * order["price"] * (1 - sell_commission - market_spread))
                 embed.add_field(
                     name=f"📤 Продаж {symbol}", 
                     value=f"**К-сть:** `{order['amount']}` | **Ціна:** `{order['price']} AC`\n**Очікувано:** ~`{profit} AC`", 
@@ -111,8 +115,9 @@ def get_my_orders_embed(uid: str, market: dict) -> discord.Embed:
 def get_my_staking_embed(uid: str, data: dict, market: dict) -> discord.Embed:
     user = data.get(uid, {})
     stakes = user.get("staking", {})
+    queue = user.get("unstaking_queue", {})
     
-    if not stakes:
+    if not stakes and not queue:
         return discord.Embed(
             title="Ваші Депозити (Стейкінг)",
             description="У вас наразі немає заблокованих активів. Використовуйте біржу, щоб зробити депозит!",
@@ -146,6 +151,14 @@ def get_my_staking_embed(uid: str, data: dict, market: dict) -> discord.Embed:
                 f"**Капає щодня:** `+ {daily_reward:.4f}` монет\n"
                 f"*~ {int(daily_ac)} AC на день*"
             ),
+            inline=False
+        )
+        
+    for symbol, q_info in queue.items():
+        unlock_time = q_info["unlock_time"]
+        embed.add_field(
+            name=f"⏳ В процесі розморозки ({symbol})",
+            value=f"**Кількість:** `{q_info['amount']:.2f}`\n**Буде доступно:** <t:{unlock_time}:R>", 
             inline=False
         )
         
@@ -183,6 +196,20 @@ class CryptoActionModal(discord.ui.Modal):
         data = load_guild_json(guild_id, DATA_FILE)
         uid = str(interaction.user.id)
         user = data.setdefault(uid, {"balance": 0, "crypto": {}})
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
+
+        if self.symbol not in market:
+            return await interaction.response.send_message("Валюту не знайдено на біржі.", ephemeral=True)
+
+        frozen_until = market[self.symbol].get("frozen_until", 0)
+        if current_time < frozen_until:
+            return await interaction.response.send_message(f"Торги призупинено через надмірну волатильність! Ринок відкриється <t:{frozen_until}:R>.", ephemeral=True)
+
+        max_sup = market[self.symbol].get("max_supply", 100000)
+        whale_limit = max_sup * 0.05
+        if amount > whale_limit:
+            return await interaction.response.send_message(f"**Захист від китів:** Ви не можете торгувати більше ніж `5%` емісії ({whale_limit} {self.symbol}) за одну угоду.", ephemeral=True)
 
         if self.action == "buy":
             last_buy = user.get("last_buy_action", 0)
@@ -193,16 +220,20 @@ class CryptoActionModal(discord.ui.Modal):
             if current_time - last_sell < 30:
                 return await interaction.response.send_message(f"⏳ Ринок перевантажено! Зачекайте ще {30 - (current_time - last_sell)} сек.", ephemeral=True)
 
-        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
-        config = load_guild_json(guild_id, ECONOMY_CONFIG)
-
-        if self.symbol not in market:
-            return await interaction.response.send_message("Валюту не знайдено на біржі.", ephemeral=True)
-
         price = market[self.symbol]["price"]
         owner_id = str(market[self.symbol].get("owner"))
 
         if self.action == "buy":
+            circulating = market[self.symbol].get("circulating_supply", 0)
+            
+            if circulating + amount > max_sup:
+                available = max(0, max_sup - circulating)
+                return await interaction.response.send_message(
+                    f"❌ Емісію вичерпано! На біржі залишилось лише `{available:.2f}` вільних монет.\n"
+                    f"💡 Шукайте пропозиції від інших гравців через **Лімітні ордери**.", 
+                    ephemeral=True
+                )
+            
             buy_commission = config.get("buy_commission", 0.05)
             total_cost = int(price * amount * (1 + buy_commission))
             
@@ -222,7 +253,7 @@ class CryptoActionModal(discord.ui.Modal):
             if owner_id != "None" and owner_id in data:
                 data[owner_id]["balance"] = data[owner_id].get("balance", 0) + owner_share
             
-            user.setdefault("crypto", {})[self.symbol] = user["crypto"].get(self.symbol, 0) + amount
+            user.setdefault("crypto", {})[self.symbol] = user.get("crypto", {}).get(self.symbol, 0) + amount
             user.setdefault("crypto_timestamps", {})[self.symbol] = current_time
             user["last_buy_action"] = current_time 
 
@@ -293,17 +324,33 @@ class LimitOrderModal(discord.ui.Modal):
         guild_id = interaction.guild.id
         data = load_guild_json(guild_id, DATA_FILE)
         market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
         uid = str(interaction.user.id)
         user = data.setdefault(uid, {"balance": 0, "crypto": {}})
         
+        if time.time() < market[self.symbol].get("frozen_until", 0): 
+            return await interaction.response.send_message("Торги призупинено!", ephemeral=True)
+            
+        if amount > market[self.symbol].get("max_supply", 100000) * 0.05: 
+            return await interaction.response.send_message("Захист від китів: ліміт 5%.", ephemeral=True)
+
         if self.action == "buy":
-            total_cost = int(amount * price)
+            buy_commission = config.get("buy_commission", 0.05)
+            total_cost = int(amount * price * (1 + buy_commission))
+            
+            if total_cost < 1:
+                return await interaction.response.send_message("Сума угоди занадто мала! Мінімум 1 AC.", ephemeral=True)
             if user.get("balance", 0) < total_cost:
                 return await interaction.response.send_message(f"Недостатньо AC! Треба {total_cost}.", ephemeral=True)
+                
             user["balance"] -= total_cost 
         else:
+            expected_profit = int(amount * price)
+            if expected_profit < 1:
+                return await interaction.response.send_message("Сума продажу занадто мала! Мінімум 1 AC.", ephemeral=True)
             if user.get("crypto", {}).get(self.symbol, 0) < amount:
                 return await interaction.response.send_message(f"Недостатньо {self.symbol} для продажу.", ephemeral=True)
+                
             user["crypto"][self.symbol] -= amount 
 
         order_book = market[self.symbol].setdefault("order_book", {"buy": [], "sell": []})
@@ -366,19 +413,25 @@ class UnstakeModal(discord.ui.Modal):
         uid = str(interaction.user.id)
         user = data.get(uid, {})
 
+        if self.symbol in user.get("unstaking_queue", {}):
+            return await interaction.response.send_message("⏳ У вас вже є активний процес розморозки для цієї монети. Дочекайтесь його завершення.", ephemeral=True)
+
         staked_amount = user.get("staking", {}).get(self.symbol, {}).get("amount", 0)
         
         if staked_amount < amount:
             return await interaction.response.send_message(f"У вас в стейкінгу лише {staked_amount} монет.", ephemeral=True)
 
         user["staking"][self.symbol]["amount"] -= amount
-        user.setdefault("crypto", {})[self.symbol] = user.get("crypto", {}).get(self.symbol, 0) + amount
-
         if user["staking"][self.symbol]["amount"] <= 0.001:
             del user["staking"][self.symbol]
 
+        user.setdefault("unstaking_queue", {})[self.symbol] = {
+            "amount": amount,
+            "unlock_time": int(time.time()) + 86400 
+        }
+
         save_guild_json(guild_id, DATA_FILE, data)
-        await interaction.response.send_message(f"Ви успішно розблокували {amount} {self.symbol} та повернули їх у гаманець!", ephemeral=True)
+        await interaction.response.send_message(f"⏳ Розпочато розморозку {amount} {self.symbol}. Кошти стануть доступними через 24 години.", ephemeral=True)
 
 class CoinDetailView(discord.ui.View):
     def __init__(self, cog: commands.Cog, symbol: str):
@@ -430,6 +483,10 @@ class CoinDetailView(discord.ui.View):
         embed.add_field(name="Поточний курс", value=f"`{info['price']} AC`", inline=True)
         embed.add_field(name="Емісія", value=f"`{circulating} / {max_sup}`", inline=True)
         embed.add_field(name="Спалено", value=f"`{burned}`", inline=True)
+        
+        frozen = info.get("frozen_until", 0)
+        if time.time() < frozen: 
+            embed.add_field(name="Статус", value=f"Заморожено до <t:{frozen}:t>", inline=False)
         
         chart_buffer = await asyncio.to_thread(generate_ohlc_chart, market, self.symbol)
         file = discord.File(chart_buffer, filename=f"{self.symbol}_chart.png")
@@ -500,6 +557,7 @@ class CancelOrderSelect(discord.ui.Select):
         uid = str(interaction.user.id)
         data = load_guild_json(guild_id, DATA_FILE)
         market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
         user = data.setdefault(uid, {"balance": 0, "crypto": {}})
         
         order_book = market[symbol].get("order_book", {"buy": [], "sell": []})
@@ -510,7 +568,8 @@ class CancelOrderSelect(discord.ui.Select):
             
         order_book[action].remove(order_to_cancel)
         if action == "buy":
-            refund = int(order_to_cancel["amount"] * order_to_cancel["price"])
+            buy_commission = config.get("buy_commission", 0.05)
+            refund = int(order_to_cancel["amount"] * order_to_cancel["price"] * (1 + buy_commission))
             user["balance"] += refund
             msg = f"Ордер скасовано! Вам повернуто `{refund} AC` на баланс."
         else:
@@ -521,8 +580,8 @@ class CancelOrderSelect(discord.ui.Select):
         save_guild_json(guild_id, DATA_FILE, data)
         save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
         
-        new_embed = get_my_orders_embed(uid, market)
-        new_view = MyOrdersView(uid, market)
+        new_embed = get_my_orders_embed(uid, market, config)
+        new_view = MyOrdersView(uid, market, config)
         await interaction.response.edit_message(embed=new_embed, view=new_view)
         await interaction.followup.send(msg, ephemeral=True)
 
@@ -535,16 +594,18 @@ class CancelAllButton(discord.ui.Button):
         uid = str(interaction.user.id)
         data = load_guild_json(guild_id, DATA_FILE)
         market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
         user = data.setdefault(uid, {"balance": 0, "crypto": {}})
         
         refund_ac = 0
+        buy_commission = config.get("buy_commission", 0.05)
         
         for symbol, info in market.items():
             order_book = info.get("order_book", {"buy": [], "sell": []})
             
             user_buys = [o for o in order_book["buy"] if o["uid"] == uid]
             for o in user_buys:
-                refund_ac += int(o["amount"] * o["price"])
+                refund_ac += int(o["amount"] * o["price"] * (1 + buy_commission))
                 order_book["buy"].remove(o)
                 
             user_sells = [o for o in order_book["sell"] if o["uid"] == uid]
@@ -558,13 +619,13 @@ class CancelAllButton(discord.ui.Button):
         save_guild_json(guild_id, DATA_FILE, data)
         save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
         
-        new_embed = get_my_orders_embed(uid, market)
-        new_view = MyOrdersView(uid, market)
+        new_embed = get_my_orders_embed(uid, market, config)
+        new_view = MyOrdersView(uid, market, config)
         await interaction.response.edit_message(embed=new_embed, view=new_view)
         await interaction.followup.send(f"Всі ордери скасовано! Повернуто: `{refund_ac} AC` та активи.", ephemeral=True)
 
 class MyOrdersView(discord.ui.View):
-    def __init__(self, uid: str, market: dict):
+    def __init__(self, uid: str, market: dict, config: dict):
         super().__init__(timeout=None)
         has_orders = any(o["uid"] == uid for info in market.values() for act in ["buy", "sell"] for o in info.get("order_book", {}).get(act, []))
         self.add_item(CancelOrderSelect(uid, market))
@@ -585,9 +646,10 @@ class CryptoDashboardView(discord.ui.View):
         guild_id = interaction.guild.id
         uid = str(interaction.user.id)
         market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
         
-        embed = get_my_orders_embed(uid, market)
-        view = MyOrdersView(uid, market)
+        embed = get_my_orders_embed(uid, market, config)
+        view = MyOrdersView(uid, market, config)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Мій Стейкінг", style=discord.ButtonStyle.success)
@@ -607,6 +669,7 @@ class CryptoCog(commands.Cog):
         self.track_ohlc_history.start()
         self.process_limit_orders.start()
         self.process_staking_rewards.start()
+        self.process_pending_unstakes.start()
         self.macroeconomic_news.start()
 
     def get_default_market(self):
@@ -640,6 +703,9 @@ class CryptoCog(commands.Cog):
         impact = (trade_value / liquidity) * 1.5
         impact = max(0.005, min(impact, 0.50)) 
         
+        if impact > 0.20:
+            info["frozen_until"] = int(time.time()) + 3600
+        
         if is_buy:
             info["price"] = int(current_price * (1 + impact))
             info["volume_buy"] = info.get("volume_buy", 0) + trade_value
@@ -649,6 +715,7 @@ class CryptoCog(commands.Cog):
             info["price"] = int(current_price * (1 - impact))
             info["volume_sell"] = info.get("volume_sell", 0) + trade_value
             info["momentum"] = info.get("momentum", 0.0) - (impact * 1.2)
+            info["circulating_supply"] = max(0, info.get("circulating_supply", 0) - amount)
             
         info["price"] = max(50, info["price"])
         info["total_trades"] = info.get("total_trades", 0) + 1
@@ -656,6 +723,27 @@ class CryptoCog(commands.Cog):
         info["market_heat"] = min(1.0, info.get("market_heat", 0.0) + 0.15 + (impact * 3))
         
         return market
+
+    @tasks.loop(minutes=5)
+    async def process_pending_unstakes(self):
+        if not os.path.exists("server_data"): return
+        current_time = int(time.time())
+        for guild_id_str in os.listdir("server_data"):
+            guild_id = int(guild_id_str)
+            data = load_guild_json(guild_id, DATA_FILE)
+            changed = False
+            for uid, user in data.items():
+                queue = user.get("unstaking_queue", {})
+                completed = []
+                for symbol, q_info in queue.items():
+                    if current_time >= q_info["unlock_time"]:
+                        user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + q_info["amount"]
+                        completed.append(symbol)
+                        changed = True
+                for s in completed: 
+                    del queue[s]
+            if changed: 
+                save_guild_json(guild_id, DATA_FILE, data)
 
     @tasks.loop(minutes=15)
     async def market_fluctuation(self):
@@ -668,6 +756,8 @@ class CryptoCog(commands.Cog):
                 if not market: continue
 
                 for symbol, info in market.items():
+                    if int(time.time()) < info.get("frozen_until", 0): continue
+                    
                     momentum = info.get("momentum", 0.0)
                     base_volatility = info.get("volatility", 0.02)
                     heat = info.get("market_heat", 0.0)
@@ -731,23 +821,45 @@ class CryptoCog(commands.Cog):
     @tasks.loop(minutes=5)
     async def process_limit_orders(self):
         if not os.path.exists("server_data"): return
+        current_time = int(time.time())
         
         for guild_id_str in os.listdir("server_data"):
             guild_id = int(guild_id_str)
             market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
             data = load_guild_json(guild_id, DATA_FILE)
+            config = load_guild_json(guild_id, ECONOMY_CONFIG)
             if not market: continue
 
             for symbol, info in market.items():
+                if current_time < info.get("frozen_until", 0): continue
+                
                 order_book = info.get("order_book", {"buy": [], "sell": []})
                 current_price = info["price"]
+                owner_id = str(info.get("owner"))
                 
                 for buy_order in order_book["buy"][:]:
                     if current_price <= buy_order["price"]:
                         uid = buy_order["uid"]
                         user = data.get(uid)
                         if user:
-                            user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + buy_order["amount"]
+                            circulating = info.get("circulating_supply", 0)
+                            max_sup = info.get("max_supply", 100000)
+                            
+                            if circulating + buy_order["amount"] > max_sup:
+                                refund = int(buy_order["amount"] * buy_order["price"] * (1 + config.get("buy_commission", 0.05)))
+                                user["balance"] = user.get("balance", 0) + refund
+                            else:
+                                user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + buy_order["amount"]
+                                info["circulating_supply"] = circulating + buy_order["amount"]
+                                user.setdefault("crypto_timestamps", {})[symbol] = int(time.time())
+                                
+                                commission = int(buy_order["amount"] * buy_order["price"] * config.get("buy_commission", 0.05))
+                                owner_share = int(buy_order["amount"] * buy_order["price"] * 0.01) if owner_id != "None" else 0
+                                config["server_bank"] = config.get("server_bank", 0) + (commission - owner_share)
+                                
+                                if owner_id != "None" and owner_id in data:
+                                    data[owner_id]["balance"] = data[owner_id].get("balance", 0) + owner_share
+                                    
                             order_book["buy"].remove(buy_order)
                 
                 for sell_order in order_book["sell"][:]:
@@ -755,11 +867,30 @@ class CryptoCog(commands.Cog):
                         uid = sell_order["uid"]
                         user = data.get(uid)
                         if user:
-                            user["balance"] = user.get("balance", 0) + int(sell_order["amount"] * current_price)
+                            sell_commission = config.get("sell_commission", 0.05)
+                            market_spread = config.get("market_spread", 0.10)
+                            base_sell = int(sell_order["amount"] * current_price * (1 - sell_commission - market_spread))
+                            
+                            last_buy = user.get("crypto_timestamps", {}).get(symbol, 0)
+                            if (int(time.time()) - last_buy) < 7200:
+                                penalty = int(base_sell * config.get("paper_hands_tax", 0.15))
+                                base_sell -= penalty
+                                config["server_bank"] = config.get("server_bank", 0) + penalty
+                                
+                            user["balance"] = user.get("balance", 0) + base_sell
+                            
+                            info["circulating_supply"] = max(0, info.get("circulating_supply", 0) - sell_order["amount"])
+                            info["burned"] = info.get("burned", 0) + (sell_order["amount"] * (sell_commission / 2))
+                            
+                            owner_share = int(sell_order["amount"] * current_price * 0.01) if owner_id != "None" else 0
+                            if owner_id != "None" and owner_id in data:
+                                data[owner_id]["balance"] = data[owner_id].get("balance", 0) + owner_share
+                                
                             order_book["sell"].remove(sell_order)
 
             save_guild_json(guild_id, DATA_FILE, data)
             save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
+            save_guild_json(guild_id, ECONOMY_CONFIG, config)
 
     @tasks.loop(hours=24)
     async def process_staking_rewards(self):
@@ -804,6 +935,7 @@ class CryptoCog(commands.Cog):
     @track_ohlc_history.before_loop
     @process_limit_orders.before_loop
     @process_staking_rewards.before_loop
+    @process_pending_unstakes.before_loop
     async def before_loops(self):
         await self.bot.wait_until_ready()
 
@@ -833,6 +965,8 @@ class CryptoCog(commands.Cog):
             )
 
         await interaction.response.send_message(embed=embed, view=CryptoDashboardView(self, market))
+
+    
 
     @app_commands.command(name="create_crypto", description="Створити свою валюту з лімітом емісії (100,000 AC)")
     @app_commands.guild_only()
@@ -884,7 +1018,7 @@ class CryptoCog(commands.Cog):
     @app_commands.guild_only()
     async def pay_crypto(self, interaction: discord.Interaction, member: discord.User, symbol: str, amount: float):
         if not math.isfinite(amount) or amount < 0.01: 
-            return await interaction.response.send_message("❌ Кількість має бути мінімум 0.01!", ephemeral=True)
+            return await interaction.response.send_message("Кількість має бути мінімум 0.01!", ephemeral=True)
             
         if member.id == interaction.user.id: return await interaction.response.send_message("Ви не можете переказати собі.", ephemeral=True)
         if member.bot: return await interaction.response.send_message("Неможливо переказати крипту боту.", ephemeral=True)
@@ -910,10 +1044,53 @@ class CryptoCog(commands.Cog):
             return await interaction.response.send_message(f"У вас недостатньо **{symbol}**!", ephemeral=True)
 
         sender["crypto"][symbol] -= amount
-        receiver.setdefault("crypto", {})[symbol] = receiver["crypto"].get(symbol, 0) + amount
+        receiver.setdefault("crypto", {})[symbol] = receiver.get("crypto", {}).get(symbol, 0) + amount
 
         save_guild_json(guild_id, DATA_FILE, data)
         await interaction.response.send_message(f"💸 Ви переказали **{amount} {symbol}** гравцю {member.mention}!")
+
+    @app_commands.command(name="central_bank", description="[Адмін] Інтервенція.")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Влити гроші (Памп монети)", value="buy"), 
+        app_commands.Choice(name="Злити резерв (Дамп ціни)", value="sell")
+    ])
+    @app_commands.guild_only()
+    async def central_bank(self, interaction: discord.Interaction, symbol: str, action: app_commands.Choice[str], amount: float):
+        if not interaction.user.guild_permissions.administrator: 
+            return await interaction.response.send_message("Лише для адміністраторів.", ephemeral=True)
+        if not math.isfinite(amount) or amount < 0.01: 
+            return await interaction.response.send_message("Мінімум 0.01.", ephemeral=True)
+        
+        symbol = symbol.upper()
+        guild_id = interaction.guild.id
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        config = load_guild_json(guild_id, ECONOMY_CONFIG)
+        bank_balance = config.get("server_bank", 0)
+        
+        if symbol not in market: 
+            return await interaction.response.send_message("Валюту не знайдено.", ephemeral=True)
+            
+        info = market[symbol]
+        
+        if action.value == "buy":
+            total_cost = int(amount * info["price"])
+            if bank_balance < total_cost: 
+                return await interaction.response.send_message(f"🏦 В казні сервера недостатньо AC! Є `{bank_balance}`, треба `{total_cost}`.", ephemeral=True)
+                
+            config["server_bank"] -= total_cost
+            market = self.apply_market_impact(market, symbol, amount, is_buy=True)
+            info["burned"] = info.get("burned", 0) + amount 
+            info["circulating_supply"] = max(0, info.get("circulating_supply", 0) - amount)
+            msg = f"🏦 **Центробанк** викупив і спалив `{amount} {symbol}` на суму `{total_cost} AC`. Ціна зросла!"
+        else:
+            total_profit = int(amount * info["price"])
+            config["server_bank"] += total_profit
+            market = self.apply_market_impact(market, symbol, amount, is_buy=False)
+            msg = f"🏦 **Центробанк** вкинув на ринок `{amount} {symbol}`. Казна поповнилась на `{total_profit} AC`. Ціна впала!"
+            
+        save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
+        save_guild_json(guild_id, ECONOMY_CONFIG, config)
+        await interaction.response.send_message(msg)
 
     @app_commands.command(name="delete_crypto", description="[Адмін] Видалити валюту")
     @app_commands.guild_only()
@@ -940,7 +1117,7 @@ class CryptoCog(commands.Cog):
                 compensation = int(amt * price)
                 data[uid]["balance"] = data[uid].get("balance", 0) + compensation
                 count += 1
-
+    
         del market[symbol]
         save_guild_json(guild_id, DATA_FILE, data)
         save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
