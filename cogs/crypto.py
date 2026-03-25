@@ -1,11 +1,10 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import json, os, time, random, logging
+import json, os, time, random, logging, math
 import io
 import asyncio
 from datetime import datetime, timezone, time as dt_time
-from matplotlib import pyplot as plt
 import pandas as pd
 import mplfinance as mpf
 import matplotlib.pyplot as plt 
@@ -19,20 +18,15 @@ DATA_FILE = "users.json"
 ECONOMY_CONFIG = "economy_config.json"
 CRYPTO_MARKET_FILE = "crypto_market.json"
 
-
-
-
-
 def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     info = market_data.get(symbol)
     
     if not info or "history" not in info or len(info["history"]) < 2:
         fig, ax = plt.subplots(figsize=(10, 5))
-        
         fig.patch.set_facecolor('#FDFCFB')
         ax.set_facecolor('#FDFCFB')
         
-        ax.text(0.5, 0.5, '🌱 Недостатньо даних для графіка', 
+        ax.text(0.5, 0.5, 'Недостатньо даних для графіка', 
                 ha='center', va='center', fontsize=14, color='#555555', transform=ax.transAxes)
         
         for spine in ax.spines.values():
@@ -70,13 +64,14 @@ def generate_ohlc_chart(market_data: dict, symbol: str) -> io.BytesIO:
     buf = io.BytesIO()
     mpf.plot(
         df, type='candle', style=style, 
-        title=f"\nWoodland Rise Exchange 🌿\n{info['name']} ({symbol})", 
+        title=f"\n{info['name']} ({symbol})", 
         ylabel='Ціна (AC)', volume=True, ylabel_lower='Обсяг торгів',
         savefig=dict(fname=buf, dpi=100, bbox_inches='tight', facecolor='#FDFCFB'),
         figsize=(10, 5), tight_layout=True
     )
     buf.seek(0)
     return buf
+
 class CryptoActionModal(discord.ui.Modal):
     def __init__(self, action: str, symbol: str, cog: commands.Cog):
         title = f"Купівля {symbol}" if action == "buy" else f"Продаж {symbol}"
@@ -88,7 +83,7 @@ class CryptoActionModal(discord.ui.Modal):
         self.amount_input = discord.ui.TextInput(
             label="Введіть потрібну кількість",
             style=discord.TextStyle.short,
-            placeholder="Наприклад: 1 або 0.5",
+            placeholder="Мінімум: 0.01",
             required=True
         )
         self.add_item(self.amount_input)
@@ -100,18 +95,14 @@ class CryptoActionModal(discord.ui.Modal):
         
         try:
             amount = float(val_str)
+            if not math.isfinite(amount) or amount < 0.01:
+                return await interaction.response.send_message("Мінімальна кількість: 0.01. Від'ємні значення заборонені.", ephemeral=True)
         except ValueError:
             return await interaction.response.send_message("Будь ласка, введіть коректне число!", ephemeral=True)
-            
-        if amount < 0.001:
-            return await interaction.response.send_message("Мінімальна кількість для торгівлі: 0.001", ephemeral=True)
 
         data = load_guild_json(guild_id, DATA_FILE)
         uid = str(interaction.user.id)
-        
-        if uid not in data:
-            data[uid] = {"balance": 0, "crypto": {}}
-        user = data[uid]
+        user = data.setdefault(uid, {"balance": 0, "crypto": {}})
 
         if self.action == "buy":
             last_buy = user.get("last_buy_action", 0)
@@ -204,8 +195,8 @@ class LimitOrderModal(discord.ui.Modal):
         self.symbol = symbol
         self.cog = cog
 
-        self.amount_input = discord.ui.TextInput(label="Кількість монет", placeholder="1.5", required=True)
-        self.price_input = discord.ui.TextInput(label="Бажана ціна за 1 монету (AC)", placeholder="1050", required=True)
+        self.amount_input = discord.ui.TextInput(label="Кількість монет", placeholder="Мінімум: 0.01", required=True)
+        self.price_input = discord.ui.TextInput(label="Бажана ціна за 1 монету (AC)", placeholder="Мінімум: 1", required=True)
         
         self.add_item(self.amount_input)
         self.add_item(self.price_input)
@@ -214,8 +205,10 @@ class LimitOrderModal(discord.ui.Modal):
         try:
             amount = float(self.amount_input.value.replace(',', '.'))
             price = int(self.price_input.value)
+            if not math.isfinite(amount) or amount < 0.01 or price < 1:
+                 return await interaction.response.send_message("Мінімум 0.01 монет. Ціна має бути від 1 AC.", ephemeral=True)
         except ValueError:
-            return await interaction.response.send_message("❌ Невірний формат чисел.", ephemeral=True)
+            return await interaction.response.send_message("Невірний формат чисел.", ephemeral=True)
 
         guild_id = interaction.guild.id
         data = load_guild_json(guild_id, DATA_FILE)
@@ -239,20 +232,22 @@ class LimitOrderModal(discord.ui.Modal):
 
         save_guild_json(guild_id, DATA_FILE, data)
         save_guild_json(guild_id, CRYPTO_MARKET_FILE, market)
-        await interaction.response.send_message(f"📋 Лімітний ордер успішно створено!", ephemeral=True)
+        await interaction.response.send_message(f"Лімітний ордер успішно створено!", ephemeral=True)
 
 class StakingModal(discord.ui.Modal):
     def __init__(self, symbol: str, cog: commands.Cog):
         super().__init__(title=f"Стейкінг {symbol}")
         self.symbol = symbol
-        self.amount_input = discord.ui.TextInput(label="Скільки монет заблокувати?", placeholder="10", required=True)
+        self.amount_input = discord.ui.TextInput(label="Скільки монет заблокувати?", placeholder="Мінімум: 0.01", required=True)
         self.add_item(self.amount_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             amount = float(self.amount_input.value.replace(',', '.'))
+            if not math.isfinite(amount) or amount < 0.01:
+                return await interaction.response.send_message("Мінімальна кількість: 0.01.", ephemeral=True)
         except ValueError:
-            return await interaction.response.send_message("❌ Невірний формат.", ephemeral=True)
+            return await interaction.response.send_message("Невірний формат.", ephemeral=True)
 
         guild_id = interaction.guild.id
         data = load_guild_json(guild_id, DATA_FILE)
@@ -269,6 +264,41 @@ class StakingModal(discord.ui.Modal):
 
         save_guild_json(guild_id, DATA_FILE, data)
         await interaction.response.send_message(f"Ви заблокували {amount} {self.symbol} у стейкінг! Відсотки капають щодня.", ephemeral=True)
+
+class UnstakeModal(discord.ui.Modal):
+    def __init__(self, symbol: str, cog: commands.Cog):
+        super().__init__(title=f"Зняти зі стейкінгу {symbol}")
+        self.symbol = symbol
+        self.cog = cog
+        self.amount_input = discord.ui.TextInput(label="Скільки монет повернути?", placeholder="Мінімум: 0.01", required=True)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = float(self.amount_input.value.replace(',', '.'))
+            if not math.isfinite(amount) or amount < 0.01:
+                return await interaction.response.send_message("Мінімальна кількість: 0.01.", ephemeral=True)
+        except ValueError:
+            return await interaction.response.send_message("Невірний формат.", ephemeral=True)
+
+        guild_id = interaction.guild.id
+        data = load_guild_json(guild_id, DATA_FILE)
+        uid = str(interaction.user.id)
+        user = data.get(uid, {})
+
+        staked_amount = user.get("staking", {}).get(self.symbol, {}).get("amount", 0)
+        
+        if staked_amount < amount:
+            return await interaction.response.send_message(f"У вас в стейкінгу лише {staked_amount} монет.", ephemeral=True)
+
+        user["staking"][self.symbol]["amount"] -= amount
+        user.setdefault("crypto", {})[self.symbol] = user.get("crypto", {}).get(self.symbol, 0) + amount
+
+        if user["staking"][self.symbol]["amount"] <= 0.001:
+            del user["staking"][self.symbol]
+
+        save_guild_json(guild_id, DATA_FILE, data)
+        await interaction.response.send_message(f"Ви успішно розблокували {amount} {self.symbol} та повернули їх у гаманець!", ephemeral=True)
 
 class CoinDetailView(discord.ui.View):
     def __init__(self, cog: commands.Cog, symbol: str):
@@ -296,6 +326,10 @@ class CoinDetailView(discord.ui.View):
     async def stake_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(StakingModal(self.symbol, self.cog))
 
+    @discord.ui.button(label="Забрати", style=discord.ButtonStyle.danger, row=2)
+    async def unstake_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(UnstakeModal(self.symbol, self.cog))
+
     @discord.ui.button(label="Оновити", style=discord.ButtonStyle.secondary, emoji="🔄", row=2)
     async def update_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
@@ -304,10 +338,9 @@ class CoinDetailView(discord.ui.View):
         market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
         
         if self.symbol not in market:
-            return await interaction.followup.send(" Валюту більше не знайдено на біржі.", ephemeral=True)
+            return await interaction.followup.send("Валюту більше не знайдено на біржі.", ephemeral=True)
             
         info = market[self.symbol]
-        
         embed = discord.Embed(title=f"Деталі: {info['name']} ({self.symbol})", color=0xA8E6CF)
         
         circulating = info.get("circulating_supply", 0)
@@ -323,6 +356,7 @@ class CoinDetailView(discord.ui.View):
         embed.set_image(url=f"attachment://{self.symbol}_chart.png")
 
         await interaction.edit_original_response(embed=embed, attachments=[file], view=self)
+
 class CryptoSearchModal(discord.ui.Modal, title='Пошук Активу'):
     symbol_input = discord.ui.TextInput(label='Введіть тікер (напр. BUB)', max_length=4, required=True)
 
@@ -345,7 +379,7 @@ class CryptoSearchModal(discord.ui.Modal, title='Пошук Активу'):
         
         embed.add_field(name="Поточний курс", value=f"`{info['price']} AC`", inline=True)
         embed.add_field(name="Емісія", value=f"`{circulating} / {max_sup}`", inline=True)
-        embed.add_field(name="Спалено 🔥", value=f"`{burned}`", inline=True)
+        embed.add_field(name="Спалено", value=f"`{burned}`", inline=True)
         
         chart_buffer = await asyncio.to_thread(generate_ohlc_chart, self.market, symbol)
         file = discord.File(chart_buffer, filename=f"{symbol}_chart.png")
@@ -393,7 +427,6 @@ class CryptoCog(commands.Cog):
         }
 
     def apply_market_impact(self, market, symbol, amount, is_buy=True):
-        """Твоя оригінальна логіка впливу на ринок"""
         if symbol not in market: return market
         
         info = market[symbol]
@@ -423,7 +456,6 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(minutes=15)
     async def market_fluctuation(self):
-        """Фоновий ШІ-аналіз активності"""
         if not os.path.exists("server_data"): return
 
         for guild_id_str in os.listdir("server_data"):
@@ -458,7 +490,6 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def track_ohlc_history(self):
-        """Збереження свічок (Open, High, Low, Close) кожні 30 хвилин"""
         if not os.path.exists("server_data"): return
         current_time = int(time.time())
         
@@ -496,7 +527,6 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def process_limit_orders(self):
-        """Механізм зведення лімітних ордерів"""
         if not os.path.exists("server_data"): return
         
         for guild_id_str in os.listdir("server_data"):
@@ -530,7 +560,6 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(hours=24)
     async def process_staking_rewards(self):
-        """Щоденне нарахування відсотків за стейкінг (APY)"""
         if not os.path.exists("server_data"): return
         
         for guild_id_str in os.listdir("server_data"):
@@ -542,7 +571,7 @@ class CryptoCog(commands.Cog):
                 if "staking" not in user: continue
                 for symbol, stake_info in user["staking"].items():
                     if symbol not in market: continue
-                    daily_reward_pct = 0.05 / 365 # 5% річних
+                    daily_reward_pct = 0.05 / 365
                     reward_amount = stake_info["amount"] * daily_reward_pct
                     user.setdefault("crypto", {})[symbol] = user.get("crypto", {}).get(symbol, 0) + reward_amount
                     
@@ -550,7 +579,6 @@ class CryptoCog(commands.Cog):
 
     @tasks.loop(hours=48)
     async def macroeconomic_news(self):
-        """Глобальні економічні події"""
         events = [
             {"msg": "🌟 Впроваджено нові технології! Ринок зростає.", "impact": 0.15},
             {"msg": "⚠️ Регулятори посилюють правила. Довіра падає.", "impact": -0.20},
@@ -651,7 +679,9 @@ class CryptoCog(commands.Cog):
     @app_commands.describe(member="Кому переказати?", symbol="Символ валюти", amount="Кількість")
     @app_commands.guild_only()
     async def pay_crypto(self, interaction: discord.Interaction, member: discord.User, symbol: str, amount: float):
-        if amount <= 0: return await interaction.response.send_message("Кількість має бути більшою за 0!", ephemeral=True)
+        if not math.isfinite(amount) or amount < 0.01: 
+            return await interaction.response.send_message("❌ Кількість має бути мінімум 0.01!", ephemeral=True)
+            
         if member.id == interaction.user.id: return await interaction.response.send_message("Ви не можете переказати собі.", ephemeral=True)
         if member.bot: return await interaction.response.send_message("Неможливо переказати крипту боту.", ephemeral=True)
 
@@ -680,6 +710,59 @@ class CryptoCog(commands.Cog):
 
         save_guild_json(guild_id, DATA_FILE, data)
         await interaction.response.send_message(f"💸 Ви переказали **{amount} {symbol}** гравцю {member.mention}!")
+
+    @app_commands.command(name="my_staking", description="Переглянути ваші активні депозити та пасивний дохід")
+    @app_commands.guild_only()
+    async def my_staking(self, interaction: discord.Interaction):
+        guild_id = interaction.guild.id
+        data = load_guild_json(guild_id, DATA_FILE)
+        uid = str(interaction.user.id)
+        
+        user = data.get(uid, {})
+        stakes = user.get("staking", {})
+        
+        if not stakes:
+            return await interaction.response.send_message(
+                "У вас наразі немає заблокованих активів. Використовуйте біржу, щоб зробити депозит!", 
+                ephemeral=True
+            )
+            
+        market = load_guild_json(guild_id, CRYPTO_MARKET_FILE)
+        
+        embed = discord.Embed(
+            title="Стейкінг",
+            description="Огляд заблокованих активів та щоденного пасивного доходу.",
+            color=0xA8E6CF 
+        )
+        
+        total_daily_ac = 0
+        
+        for symbol, stake_info in stakes.items():
+            if symbol not in market: continue
+            
+            amount = stake_info["amount"]
+            
+            yearly_reward = amount * 0.05
+            daily_reward = yearly_reward / 365
+            
+            current_price = market[symbol]["price"]
+            daily_ac = daily_reward * current_price
+            total_daily_ac += daily_ac
+            
+            embed.add_field(
+                name=f"{market[symbol]['name']} ({symbol})",
+                value=(
+                    f"**Заблоковано:** `{amount:.2f}` монет\n"
+                    f"**Ставка (APY):** `5%`\n"
+                    f"**Капає щодня:** `+ {daily_reward:.4f}` монет\n"
+                    f"*~ {int(daily_ac)} AC на день*"
+                ),
+                inline=False
+            )
+            
+        embed.set_footer(text=f"Загальний прогнозований дохід: ~ {int(total_daily_ac)} AC/день")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="delete_crypto", description="[Адмін] Видалити валюту")
     @app_commands.guild_only()
