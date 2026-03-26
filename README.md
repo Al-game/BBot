@@ -3,6 +3,7 @@
 BBot is a comprehensive, multi-functional bot written in discord.py that combines an economy, classic RPG elements, and moderation tools. The main focus is on player interaction through business, a resource market, and character development.
 
 ### Key Technologies:
+
 - Language: Python 3.10+
 - Library: Discord.py 2.x
 - Database: JSON file system.
